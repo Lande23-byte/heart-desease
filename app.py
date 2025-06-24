@@ -1,88 +1,109 @@
-import os
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from google.cloud import bigquery
+from google.oauth2 import service_account
+import os
+
+# Auth path for Google service account (set by Render Secret File)
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/etc/secrets/gcp-key.json"
 
 app = Flask(__name__)
+credentials = service_account.Credentials.from_service_account_file("/etc/secrets/gcp-key.json")
+client = bigquery.Client(credentials=credentials, project=credentials.project_id)
 
-# Securely connect to BigQuery using your JSON key
-CREDENTIALS_PATH = "heartdisease-463313-a0e55a46c3e0.json"
-client = bigquery.Client.from_service_account_json(CREDENTIALS_PATH)
+# Simple HTML form template
+form_template = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Heart Disease Predictor</title>
+    <style>
+        body { font-family: Arial; background: #f2f2f2; padding: 20px; max-width: 600px; margin: auto; }
+        input { padding: 10px; width: 100%; margin: 10px 0; }
+        button { padding: 10px; background-color: #007bff; color: white; border: none; width: 100%; }
+    </style>
+</head>
+<body>
+    <h2>Heart Disease Prediction</h2>
+    <form method="post" action="/">
+        {% for field in fields %}
+            <label>{{ field }}</label>
+            <input type="number" name="{{ field }}" required>
+        {% endfor %}
+        <button type="submit">Predict</button>
+    </form>
+    {% if prediction is not none %}
+        <h3>Prediction: {{ prediction }}</h3>
+    {% endif %}
+</body>
+</html>
+"""
 
-# Home route with input form
-@app.route('/', methods=["GET", "POST"])
+fields = ['age', 'sex', 'cp', 'trestbps', 'chol', 'fbs',
+          'restecg', 'thalch', 'exang', 'oldpeak', 'slope', 'ca', 'thal']
+
+@app.route("/", methods=["GET", "POST"])
 def home():
     prediction = None
     if request.method == "POST":
-        # Get form data
-        age = request.form['age']
-        sex = request.form['sex']
-        cp = request.form['cp']
-        trestbps = request.form['trestbps']
-        chol = request.form['chol']
-        fbs = request.form['fbs']
-        restecg = request.form['restecg']
-        thalch = request.form['thalch']
-        exang = request.form['exang']
-        oldpeak = request.form['oldpeak']
-        slope = request.form['slope']
-        ca = request.form['ca']
-        thal = request.form['thal']
+        try:
+            data = {field: request.form[field] for field in fields}
+            query = f"""
+            SELECT predicted_target
+            FROM ML.PREDICT(MODEL heartdisease-463313.diseasedataset.disease_model,
+                (SELECT
+                    {data['age']} AS age,
+                    {data['sex']} AS sex,
+                    {data['cp']} AS cp,
+                    {data['trestbps']} AS trestbps,
+                    {data['chol']} AS chol,
+                    {data['fbs']} AS fbs,
+                    {data['restecg']} AS restecg,
+                    {data['thalch']} AS thalch,
+                    {data['exang']} AS exang,
+                    {data['oldpeak']} AS oldpeak,
+                    {data['slope']} AS slope,
+                    {data['ca']} AS ca,
+                    {data['thal']} AS thal
+                )
+            )
+            """
+            results = client.query(query).result()
+            for row in results:
+                prediction = int(row["predicted_target"])
+        except Exception as e:
+            prediction = f"Error: {str(e)}"
+    return render_template_string(form_template, fields=fields, prediction=prediction)
 
-        # BigQuery prediction query
-        query = f"""
-        SELECT *
-        FROM ML.PREDICT(MODEL `heartdisease-463313.diseasedataset.disease_model`,
-        (SELECT
-            {age} AS age,
-            {sex} AS sex,
-            {cp} AS cp,
-            {trestbps} AS trestbps,
-            {chol} AS chol,
-            {fbs} AS fbs,
-            {restecg} AS restecg,
-            {thalch} AS thalch,
-            {exang} AS exang,
-            {oldpeak} AS oldpeak,
-            {slope} AS slope,
-            {ca} AS ca,
-            {thal} AS thal
-        ));
-        """
-
-        job = client.query(query)
-        results = [dict(row) for row in job]
-        prediction = results[0] if results else "No prediction available"
-
-    return render_template('index.html', prediction=prediction)
-
-# API route for programmatic prediction
-@app.route('/predict', methods=['POST'])
+@app.route("/predict", methods=["POST"])
 def predict_api():
-    data = request.json
+    try:
+        data = request.get_json()
+        query = f"""
+        SELECT predicted_target
+        FROM ML.PREDICT(MODEL heartdisease-463313.diseasedataset.disease_model,
+            (SELECT
+                {data['age']} AS age,
+                {data['sex']} AS sex,
+                {data['cp']} AS cp,
+                {data['trestbps']} AS trestbps,
+                {data['chol']} AS chol,
+                {data['fbs']} AS fbs,
+                {data['restecg']} AS restecg,
+                {data['thalch']} AS thalch,
+                {data['exang']} AS exang,
+                {data['oldpeak']} AS oldpeak,
+                {data['slope']} AS slope,
+                {data['ca']} AS ca,
+                {data['thal']} AS thal
+            )
+        )
+        """
+        results = client.query(query).result()
+        for row in results:
+            return jsonify({"prediction": int(row["predicted_target"])})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
-    query = f"""
-    SELECT *
-    FROM ML.PREDICT(MODEL `heartdisease-463313.diseasedataset.disease_model`,
-    (SELECT
-        {data['age']} AS age,
-        {data['sex']} AS sex,
-        {data['cp']} AS cp,
-        {data['trestbps']} AS trestbps,
-        {data['chol']} AS chol,
-        {data['fbs']} AS fbs,
-        {data['restecg']} AS restecg,
-        {data['thalch']} AS thalch,
-        {data['exang']} AS exang,
-        {data['oldpeak']} AS oldpeak,
-        {data['slope']} AS slope,
-        {data['ca']} AS ca,
-        {data['thal']} AS thal
-    ));
-    """
-
-    job = client.query(query)
-    results = [dict(row) for row in job]
-    return jsonify(results)
-
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=False, host="0.0.0.0", port=port)
